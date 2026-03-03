@@ -119,11 +119,10 @@ export function PRMergePanel({
 	const [pendingAction, setPendingAction] = useState<
 		"merge" | "close" | "reopen" | "draft" | "ready" | "updateBranch" | null
 	>(null);
-	const [result, setResult] = useState<{ type: "success" | "error"; message: string } | null>(
-		null,
-	);
 	const [mergeError, setMergeError] = useState<string | null>(null);
 	const [mergeErrorDialogOpen, setMergeErrorDialogOpen] = useState(false);
+	const [actionError, setActionError] = useState<string | null>(null);
+	const [actionErrorDialogOpen, setActionErrorDialogOpen] = useState(false);
 	const [isMerged, setIsMerged] = useState(false);
 	const [isGenerating, setIsGenerating] = useState(false);
 	const [toolsDropdownOpen, setToolsDropdownOpen] = useState(false);
@@ -195,39 +194,25 @@ export function PRMergePanel({
 			});
 			const data = await res.json();
 			if (!res.ok) {
+				let errorMessage = data.error || "Failed to generate";
 				if (data.error === "CREDIT_EXHAUSTED") {
-					setResult({
-						type: "error",
-						message: "Your credits have been used up",
-					});
+					errorMessage = "Your credits have been used up";
 				} else if (data.error === "SPENDING_LIMIT_REACHED") {
-					setResult({
-						type: "error",
-						message: "Monthly spending limit reached",
-					});
-				} else {
-					setResult({
-						type: "error",
-						message: data.error || "Failed to generate",
-					});
+					errorMessage = "Monthly spending limit reached";
 				}
+				setActionError(errorMessage);
+				setActionErrorDialogOpen(true);
 				return;
 			}
 			if (data.title) setCommitTitle(data.title);
 			if (data.description) setCommitMessage(data.description);
 		} catch {
-			setResult({ type: "error", message: "Failed to generate commit message" });
+			setActionError("Failed to generate commit message");
+			setActionErrorDialogOpen(true);
 		} finally {
 			setIsGenerating(false);
 		}
 	};
-
-	useEffect(() => {
-		if (result && result.type === "success") {
-			const timer = setTimeout(() => setResult(null), 3000);
-			return () => clearTimeout(timer);
-		}
-	}, [result]);
 
 	const invalidatePRQueries = useCallback(() => {
 		queryClient.removeQueries({ queryKey: ["prs", owner, repo] });
@@ -235,7 +220,6 @@ export function PRMergePanel({
 	}, [queryClient, owner, repo]);
 
 	const doMerge = (mergeMethod: MergeMethod, title?: string, message?: string) => {
-		setResult(null);
 		setMergeError(null);
 		setPendingAction("merge");
 		startTransition(async () => {
@@ -254,7 +238,6 @@ export function PRMergePanel({
 				}
 			} else {
 				setMergeError(null);
-				setResult({ type: "success", message: "Merged" });
 				emit({ type: "pr:merged", owner, repo, number: pullNumber });
 				invalidatePRQueries();
 				setSquashDialogOpen(false);
@@ -280,14 +263,13 @@ export function PRMergePanel({
 	};
 
 	const handleClose = () => {
-		setResult(null);
 		setPendingAction("close");
 		startTransition(async () => {
 			const res = await closePullRequest(owner, repo, pullNumber);
 			if (res.error) {
-				setResult({ type: "error", message: res.error });
+				setActionError(res.error);
+				setActionErrorDialogOpen(true);
 			} else {
-				setResult({ type: "success", message: "Closed" });
 				emit({ type: "pr:closed", owner, repo, number: pullNumber });
 				invalidatePRQueries();
 				router.refresh();
@@ -296,14 +278,13 @@ export function PRMergePanel({
 	};
 
 	const handleReopen = () => {
-		setResult(null);
 		setPendingAction("reopen");
 		startTransition(async () => {
 			const res = await reopenPullRequest(owner, repo, pullNumber);
 			if (res.error) {
-				setResult({ type: "error", message: res.error });
+				setActionError(res.error);
+				setActionErrorDialogOpen(true);
 			} else {
-				setResult({ type: "success", message: "Reopened" });
 				emit({ type: "pr:reopened", owner, repo, number: pullNumber });
 				invalidatePRQueries();
 				router.refresh();
@@ -312,14 +293,13 @@ export function PRMergePanel({
 	};
 
 	const handleUpdateBranch = () => {
-		setResult(null);
 		setPendingAction("updateBranch");
 		startTransition(async () => {
 			const res = await updatePRBranch(owner, repo, pullNumber);
 			if (res.error) {
-				setResult({ type: "error", message: res.error });
+				setActionError(res.error);
+				setActionErrorDialogOpen(true);
 			} else {
-				setResult({ type: "success", message: "Branch updated" });
 				invalidatePRQueries();
 				router.refresh();
 			}
@@ -327,12 +307,12 @@ export function PRMergePanel({
 	};
 
 	const handleConvertToDraft = () => {
-		setResult(null);
 		setPendingAction("draft");
 		startTransition(async () => {
 			const res = await convertPRToDraft(owner, repo, pullNumber);
 			if (res.error) {
-				setResult({ type: "error", message: res.error });
+				setActionError(res.error);
+				setActionErrorDialogOpen(true);
 			} else {
 				emit({
 					type: "pr:converted_to_draft",
@@ -347,12 +327,12 @@ export function PRMergePanel({
 	};
 
 	const handleMarkReady = () => {
-		setResult(null);
 		setPendingAction("ready");
 		startTransition(async () => {
 			const res = await markPRReadyForReview(owner, repo, pullNumber);
 			if (res.error) {
-				setResult({ type: "error", message: res.error });
+				setActionError(res.error);
+				setActionErrorDialogOpen(true);
 			} else {
 				emit({
 					type: "pr:ready_for_review",
@@ -371,32 +351,56 @@ export function PRMergePanel({
 	if (state === "closed") {
 		if (!canTriage && !isAuthor) return null;
 		return (
-			<div className="flex items-center gap-2">
-				{result && (
-					<span
-						className={cn(
-							"text-[10px] font-mono",
-							result.type === "error"
-								? "text-destructive"
-								: "text-success",
-						)}
+			<>
+				<div className="flex items-center gap-2">
+					<button
+						onClick={handleReopen}
+						disabled={isPending}
+						className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
 					>
-						{result.message}
-					</span>
-				)}
-				<button
-					onClick={handleReopen}
-					disabled={isPending}
-					className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+						{isPending && pendingAction === "reopen" ? (
+							<Loader2 className="w-3 h-3 animate-spin" />
+						) : (
+							<RotateCcw className="w-3 h-3" />
+						)}
+						Reopen
+					</button>
+				</div>
+
+				{/* Action error dialog */}
+				<Dialog
+					open={actionErrorDialogOpen}
+					onOpenChange={(open) => {
+						setActionErrorDialogOpen(open);
+						if (!open) setActionError(null);
+					}}
 				>
-					{isPending && pendingAction === "reopen" ? (
-						<Loader2 className="w-3 h-3 animate-spin" />
-					) : (
-						<RotateCcw className="w-3 h-3" />
-					)}
-					Reopen
-				</button>
-			</div>
+					<DialogContent className="sm:max-w-md">
+						<DialogHeader>
+							<DialogTitle className="flex items-center gap-2 text-sm font-mono text-destructive">
+								<XCircle className="w-4 h-4" />
+								Action failed
+							</DialogTitle>
+							<DialogDescription className="text-xs text-muted-foreground">
+								{actionError}
+							</DialogDescription>
+						</DialogHeader>
+						<DialogFooter>
+							<button
+								onClick={() => {
+									setActionErrorDialogOpen(
+										false,
+									);
+									setActionError(null);
+								}}
+								className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer"
+							>
+								Dismiss
+							</button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+			</>
 		);
 	}
 
@@ -405,19 +409,6 @@ export function PRMergePanel({
 	return (
 		<>
 			<div className="flex items-center gap-2">
-				{result && (
-					<span
-						className={cn(
-							"text-[10px] font-mono",
-							result.type === "error"
-								? "text-destructive"
-								: "text-success",
-						)}
-					>
-						{result.message}
-					</span>
-				)}
-
 				{/* Merge button with dropdown */}
 				{canWrite && (
 					<div ref={dropdownRef} className="relative">
@@ -946,6 +937,38 @@ export function PRMergePanel({
 								<GitMerge className="w-3 h-3" />
 							)}
 							Confirm squash and merge
+						</button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			{/* Action error dialog */}
+			<Dialog
+				open={actionErrorDialogOpen}
+				onOpenChange={(open) => {
+					setActionErrorDialogOpen(open);
+					if (!open) setActionError(null);
+				}}
+			>
+				<DialogContent className="sm:max-w-md">
+					<DialogHeader>
+						<DialogTitle className="flex items-center gap-2 text-sm font-mono text-destructive">
+							<XCircle className="w-4 h-4" />
+							Action failed
+						</DialogTitle>
+						<DialogDescription className="text-xs text-muted-foreground">
+							{actionError}
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<button
+							onClick={() => {
+								setActionErrorDialogOpen(false);
+								setActionError(null);
+							}}
+							className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider border border-border rounded text-muted-foreground hover:text-foreground hover:bg-muted/60 dark:hover:bg-white/3 transition-colors cursor-pointer"
+						>
+							Dismiss
 						</button>
 					</DialogFooter>
 				</DialogContent>
